@@ -54,32 +54,32 @@
         ^GetShardIteratorResult res (.getShardIterator client req)]
     (.getShardIterator res)))
 
-(defn records-batch [^AmazonDynamoDBStreams client shard-iterator]
+(defn records-batch [^AmazonDynamoDBStreams client shard-iterator batch-size]
   (let [^GetRecordsRequest req (-> (GetRecordsRequest.)
-                                   (.withShardIterator shard-iterator))
+                                   (.withShardIterator shard-iterator)
+                                   (.withLimit batch-size))
         ^GetRecordsResult res (.getRecords client req)
         batch (.getRecords res)]
     {:records batch
      :next-shard-iterator (.getNextShardIterator res)}))
 
 (defn records*
-  [^AmazonDynamoDBStreams client iter aconv xs]
+  [^AmazonDynamoDBStreams client iter aconv n xs]
   (lazy-seq
    (if (seq xs)
      (cons (record-parsing/record->clj (first xs) aconv)
-           (records* client iter aconv (rest xs)))
+           (records* client iter aconv n (rest xs)))
      (if iter
-       (let [batch (records-batch client iter)]
-         (records* client
-                   (:next-shard-iterator batch)
-                   aconv
-                   (:records batch)))))))
+       (let [{:keys [records next-shard-iterator]} (records-batch client iter n)]
+         (records* client next-shard-iterator aconv n records))))))
 
 (defn records
   ([client shard-iterator]
-   (records* client shard-iterator record-parsing/default-attribute-converter []))
-  ([client shard-iterator attribute-converter]
-   (records* client shard-iterator attribute-converter [])))
+   (records client shard-iterator {}))
+  ([client shard-iterator {:keys [batch-size attribute-converter]
+                           :or {batch-size 100
+                                attribute-converter record-parsing/default-attribute-converter}}]
+   (records* client shard-iterator attribute-converter batch-size [])))
 
 
 (defn walk-shards
