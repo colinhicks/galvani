@@ -1,5 +1,5 @@
-(ns faraday-streams.client-test
-  (:require [faraday-streams.client :as client]
+(ns galvani.client-test
+  (:require [galvani.client :as client]
             [clojure.test :refer [deftest is]]))
 
 

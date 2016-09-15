@@ -1,4 +1,4 @@
-(ns faraday-streams.client
+(ns galvani.client
   (:require [taoensso.faraday :as faraday]
             [taoensso.faraday.utils :as faraday-utils])
   (:import [com.amazonaws.auth EnvironmentVariableCredentialsProvider]

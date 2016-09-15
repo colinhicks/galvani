@@ -1,4 +1,4 @@
-# Faraday streams
+# Galvani
 
 ## A Clojure client for reading DynamoDB streams
 
@@ -6,15 +6,15 @@
 ### Usage
 
 ```clojure
-(require '[faraday-streams.client :as fsc])
+(require '[galvani.client :as galvani])
 
 (defn all-available-records [stream-arn]
-  (let [client (fsc/streams-client)
+  (let [client (galvani/streams-client)
         oldest-shard-id (-> client
-                            (fsc/describe-stream stream-arn)
-                            (fsc/oldest-shard-id))
-        shard-iterator (fsc/shard-iterator client stream-arn oldest-shard-id :trim-horizon)]
-    (fsc/records client shard-iterator)))
+                            (galvani/describe-stream stream-arn)
+                            (galvani/oldest-shard-id))
+        shard-iterator (galvani/shard-iterator client stream-arn oldest-shard-id :trim-horizon)]
+    (galvani/records client shard-iterator)))
 
 (->> (all-available-records "arn:aws:dynamodb...")
      (filter #(-> % :dynamodb :new-item :something-interesting?))
