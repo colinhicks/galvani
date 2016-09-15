@@ -3,9 +3,9 @@
             [taoensso.faraday.utils :as faraday-utils])
   (:import [com.amazonaws.auth EnvironmentVariableCredentialsProvider]
            [com.amazonaws.services.dynamodbv2 AmazonDynamoDBStreamsClient AmazonDynamoDBStreams]
-           [com.amazonaws.services.dynamodbv2.model AttributeValue DescribeStreamRequest GetRecordsRequest
-            GetRecordsResult GetShardIteratorRequest GetShardIteratorResult Record Shard ShardIteratorType
-            StreamDescription StreamRecord]))
+           [com.amazonaws.services.dynamodbv2.model AttributeValue DescribeStreamRequest DescribeStreamResult
+            GetRecordsRequest GetRecordsResult GetShardIteratorRequest GetShardIteratorResult Record Shard
+            ShardIteratorType StreamDescription StreamRecord SequenceNumberRange]))
 
 
 (defn db-val->clj-val [val]
@@ -35,9 +35,17 @@
    (doto (streams-client)
      (.setEndpoint endpoint))))
 
+(defn shard->clj [^Shard shard]
+  {:shard-id (.getShardId shard)
+   :parent-shard-id (.getParentShardId shard)
+   :sequence-number-range
+   (let [^SequenceNumberRange snr (.getSequenceNumberRange shard)]
+     {:starting-sequence-number (.getStartingSequenceNumber snr)
+      :ending-sequence-number (.getEndingSequenceNumber snr)})})
+
 (defn describe-stream [^AmazonDynamoDBStreams client arn]
   (let [^DescribeStreamRequest req (.withStreamArn (DescribeStreamRequest.) arn)
-        ^StreamDescription description (.getStreamDescription (.describeStream client req))]
+        ^StreamDescription description (.getStreamDescription ^DescribeStreamResult (.describeStream client req))]
     {:stream-arn (.getStreamArn description)
      :stream-label (.getStreamLabel description)
      :stream-status (.getStreamStatus description)
@@ -45,7 +53,7 @@
      :creation-request-date-time (.getCreationRequestDateTime description)
      :table-name (.getTableName description)
      :key-schema (.getKeySchema description)
-     :shards (.getShards description)
+     :shards (mapv shard->clj (.getShards description))
      :last-evaluated-shard-id (.getLastEvaluatedShardId description)}))
 
 (def shard-iterator-types
@@ -101,3 +109,12 @@
       (if shard-iterator
         (let [batch (records-batch client shard-iterator)]
           (records client (:next-shard-iterator batch) (:records batch))))))))
+
+
+(defn walk-shards
+  "walk shards, returning records in shard-lineage order, based on iterator kw.
+   in trim horizon case, use first shard and walk forward in time
+   in latest case, use last shard and walk backward in time
+   sequence number cases use last two arguments: sequence-number and either :trim-horizon or :latest, representing destination
+   in sequence number cases, find an appropriate shard and walk corresponding direction"
+  [client stream-description shard-iterator-kw & [sequence-number directional-shard-iterator-kw]])
