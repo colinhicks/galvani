@@ -32,7 +32,7 @@
       (is (= 9 (count (take 999 recs)))))))
 
 
-(deftest describe-stream-and-shard-walking
+(deftest describe-stream
   (let [shard (fn [[id parent-id start end]] (-> (com.amazonaws.services.dynamodbv2.model.Shard.)
                                                  (.withShardId id)
                                                  (.withParentShardId parent-id)

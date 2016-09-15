@@ -1,32 +1,11 @@
 (ns galvani.client
-  (:require [taoensso.faraday :as faraday]
-            [taoensso.faraday.utils :as faraday-utils])
+  (:require [galvani.record-parsing :as record-parsing])
   (:import [com.amazonaws.auth EnvironmentVariableCredentialsProvider]
            [com.amazonaws.services.dynamodbv2 AmazonDynamoDBStreamsClient AmazonDynamoDBStreams]
-           [com.amazonaws.services.dynamodbv2.model AttributeValue DescribeStreamRequest DescribeStreamResult
-            GetRecordsRequest GetRecordsResult GetShardIteratorRequest GetShardIteratorResult Record Shard
-            ShardIteratorType StreamDescription StreamRecord SequenceNumberRange]))
+           [com.amazonaws.services.dynamodbv2.model DescribeStreamRequest DescribeStreamResult
+            GetRecordsRequest GetRecordsResult GetShardIteratorRequest GetShardIteratorResult Shard
+            ShardIteratorType StreamDescription SequenceNumberRange]))
 
-
-(defn db-val->clj-val [val]
-  (if-not (map? val)
-    (#'faraday/db-val->clj-val ^AttributeValue val)
-    (let [[type x] (first val)
-          type' (-> type name clojure.string/lower-case keyword)]
-      (case type'
-        :s    x
-        :n    (#'faraday/ddb-num-str->num x)
-        :null nil
-        :bool (boolean  x)
-        :ss   (into #{} x)
-        :ns   (into #{} (mapv #'faraday/ddb-num-str->num x))
-        :bs   (into #{} (mapv #'faraday/nt-thaw x))
-        :b    (#'faraday/nt-thaw  x)
-        :l    (mapv db-val->clj-val x)
-        :m    x))))
-
-(defn ddb-item->clj-item [item]
-  (faraday-utils/keyword-map db-val->clj-val item))
 
 (defn streams-client
   ([]
@@ -83,32 +62,24 @@
     {:records batch
      :next-shard-iterator (.getNextShardIterator res)}))
 
-(defn stream-record->clj [^StreamRecord stream-record]
-  {:keys (ddb-item->clj-item (.getKeys stream-record))
-   :new-image (ddb-item->clj-item (.getNewImage stream-record))
-   :old-image (ddb-item->clj-item (.getOldImage stream-record))
-   :sequence-number (.getSequenceNumber stream-record)
-   :size-bytes (.getSizeBytes stream-record)
-   :stream-view-type (.getStreamViewType stream-record)})
-
-(defn record->clj [^Record record]
-  {:event-id (.getEventID record)
-   :event-name (.getEventName record)
-   :event-version (.getEventVersion record)
-   :event-source (.getEventSource record)
-   :aws-region (.getAwsRegion record)
-   :dynamodb (stream-record->clj (.getDynamodb record))})
+(defn records*
+  [^AmazonDynamoDBStreams client iter aconv xs]
+  (lazy-seq
+   (if (seq xs)
+     (cons (record-parsing/record->clj (first xs) aconv)
+           (records* client iter aconv (rest xs)))
+     (if iter
+       (let [batch (records-batch client iter)]
+         (records* client
+                   (:next-shard-iterator batch)
+                   aconv
+                   (:records batch)))))))
 
 (defn records
-  ([^AmazonDynamoDBStreams client shard-iterator]
-   (records client shard-iterator []))
-  ([^AmazonDynamoDBStreams client shard-iterator xs]
-   (lazy-seq
-    (if (seq xs)
-      (cons (record->clj (first xs)) (records client shard-iterator (rest xs)))
-      (if shard-iterator
-        (let [batch (records-batch client shard-iterator)]
-          (records client (:next-shard-iterator batch) (:records batch))))))))
+  ([client shard-iterator]
+   (records* client shard-iterator record-parsing/default-attribute-converter []))
+  ([client shard-iterator attribute-converter]
+   (records* client shard-iterator attribute-converter [])))
 
 
 (defn walk-shards

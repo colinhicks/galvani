@@ -6,7 +6,7 @@
 ### Usage
 
 ```clojure
-(require '[galvani.client :as galvani])
+    (require '[galvani.client :as galvani])
 
 (defn all-available-records [stream-arn]
   (let [client (galvani/streams-client)
@@ -38,3 +38,6 @@ With a different pricing model, DynamoDB Streams be a product separate from Dyna
 > — Zach Tellman, Elements of Clojure
 
 Kinesis Streams, DynamoDB Streams, DynamoDB Tables. Amazon's conflating names invite confusion not only in dicussion; worse—they breed entanglement in our design & implementation. And if the names are here to stay, one way to mitigate ambiguity is by choosing narrower bounds for the scope of libraries interacting with these systems. Herein, an attempt.
+
+### Acknowlegements
+* [taoensso/faraday](https://github.com/taoensso/faraday)
