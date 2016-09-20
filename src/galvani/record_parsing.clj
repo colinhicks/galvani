@@ -52,8 +52,9 @@
    :size-bytes (.getSizeBytes stream-record)
    :stream-view-type (.getStreamViewType stream-record)})
 
-(defn record->clj [^Record record attribute-converter]
-  {:event-id (.getEventID record)
+(defn record->clj [^Record record iterator-info attribute-converter]
+  {:iterator-info iterator-info
+   :event-id (.getEventID record)
    :event-name (.getEventName record)
    :event-version (.getEventVersion record)
    :event-source (.getEventSource record)
