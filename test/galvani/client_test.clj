@@ -1,5 +1,6 @@
 (ns galvani.client-test
   (:require [galvani.client :as client]
+            [com.stuartsierra.dependency :as dependency]
             [clojure.test :refer [deftest is]]
             [clojure.core.async :as async])
   (:import [com.amazonaws.services.dynamodbv2 AmazonDynamoDBStreams]
@@ -121,3 +122,82 @@
   )
 
 
+(deftest match-shards
+  (let [shards [{:shard-id "shardId-00000001473809200686-70269655" 
+                 :parent-shard-id "shardId-00000001473796542190-2bd0df1e" 
+                 :ending-sequence-number 168986800000000010966096477N
+                 :starting-sequence-number 168986800000000010966096476N} 
+                {:shard-id "shardId-00000001473822397022-2f1e8861" 
+                 :parent-shard-id "shardId-00000001473809200686-70269655" 
+                 :ending-sequence-number 169713500000000013292899685N 
+                 :starting-sequence-number 169713500000000013292899684N} 
+                {:shard-id "shardId-00000001473836343761-d0e55bda" 
+                 :parent-shard-id "shardId-00000001473822397022-2f1e8861" 
+                 :ending-sequence-number 170481300000000008600933632N 
+                 :starting-sequence-number 170481300000000008600933631N} 
+                {:shard-id "shardId-00000001473850173885-a8daa037" 
+                 :parent-shard-id "shardId-00000001473836343761-d0e55bda" 
+                 :ending-sequence-number 170481300000000008600933938N 
+                 :starting-sequence-number 170481300000000008600993637N} 
+                {:shard-id "shardId-00000001473863878679-3c26c6b9" 
+                 :parent-shard-id "shardId-00000001473850173885-a8daa037" 
+                 :ending-sequence-number 171997500000000008527703142N 
+                 :starting-sequence-number 171997500000000008527703141N} 
+                {:shard-id "shardId-00000001473879823062-fb383dfe" 
+                 :parent-shard-id "shardId-00000001473863878679-3c26c6b9" 
+                 :ending-sequence-number 172875200000000012689616965N 
+                 :starting-sequence-number 172875200000000012689616964N} 
+                {:shard-id "shardId-00000001473895717417-f02c79a0" 
+                 :parent-shard-id "shardId-00000001473879823062-fb383dfe" 
+                 :starting-sequence-number 173750800000000011849530822N}]
+        graph (client/shard-graph shards)]
+    (is (= #{"shardId-00000001473809200686-70269655" :trim-horizon}
+           (dependency/transitive-dependencies graph (:shard-id (second shards)))))
+    (is (= #{"shardId-00000001473895717417-f02c79a0"}
+           (dependency/immediate-dependencies graph :latest)))
+
+    (is (= ["shardId-00000001473836343761-d0e55bda"
+            "shardId-00000001473850173885-a8daa037"
+            "shardId-00000001473863878679-3c26c6b9"
+            "shardId-00000001473879823062-fb383dfe"
+            "shardId-00000001473895717417-f02c79a0"]
+           (vec (client/match-shards shards graph :at-sequence-number 170481300000000008600933632N))))
+    
+    (is (empty?
+         (client/match-shards shards graph :at-sequence-number 0)))
+
+    (is (= #{"shardId-00000001473895717417-f02c79a0"}
+           (client/match-shards shards graph :latest)))
+
+    (is (= (->> shards (sort-by :starting-sequence-number) (map :shard-id))
+           (vec (client/match-shards shards graph :trim-horizon))))))
+
+(deftest stream-reader
+  (let [describe-stream-invocations (atom 0)
+        shards [{:shard-id "shardId-00000001473809200686-70269655" 
+                 :parent-shard-id "shardId-00000001473796542190-2bd0df1e" 
+                 :ending-sequence-number 168986800000000010966096477N
+                 :starting-sequence-number 168986800000000010966096476N} 
+                {:shard-id "shardId-00000001473822397022-2f1e8861" 
+                 :parent-shard-id "shardId-00000001473809200686-70269655" 
+                 :ending-sequence-number 169713500000000013292899685N 
+                 :starting-sequence-number 169713500000000013292899684N} 
+                {:shard-id "shardId-00000001473836343761-d0e55bda" 
+                 :parent-shard-id "shardId-00000001473822397022-2f1e8861" 
+                 :ending-sequence-number 170481300000000008600933632N 
+                 :starting-sequence-number 170481300000000008600933631N} 
+                {:shard-id "shardId-00000001473850173885-a8daa037" 
+                 :parent-shard-id "shardId-00000001473836343761-d0e55bda" 
+                 :ending-sequence-number 170481300000000008600933938N 
+                 :starting-sequence-number 170481300000000008600993637N} 
+                {:shard-id "shardId-00000001473863878679-3c26c6b9" 
+                 :parent-shard-id "shardId-00000001473850173885-a8daa037" 
+                 :ending-sequence-number 171997500000000008527703142N 
+                 :starting-sequence-number 171997500000000008527703141N} 
+                {:shard-id "shardId-00000001473879823062-fb383dfe" 
+                 :parent-shard-id "shardId-00000001473863878679-3c26c6b9" 
+                 :ending-sequence-number 172875200000000012689616965N 
+                 :starting-sequence-number 172875200000000012689616964N} 
+                {:shard-id "shardId-00000001473895717417-f02c79a0" 
+                 :parent-shard-id "shardId-00000001473879823062-fb383dfe" 
+                 :starting-sequence-number 173750800000000011849530822N}]]))
