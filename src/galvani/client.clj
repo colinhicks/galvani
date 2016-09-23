@@ -93,23 +93,6 @@
    (read-shard* client iterator-info attribute-converter batch-size [])))
 
 
-(defn read-shards [client iterator-infos record-opts]
-  (let [out-ch (async/chan (count iterator-infos))
-        iter-chs (map #(async/thread (read-shard client % record-opts)) iterator-infos)]
-    (async/go-loop [chs iter-chs]
-      (let [[iter-result port] (async/alts! chs)
-            next-chs (filterv #(not= port %) chs)]
-        (when (seq iter-result)
-          (loop [[x & xs] iter-result]
-            (when x
-              (async/>! out-ch x)
-              (recur xs)))
-          (async/close! port))
-        (if (seq next-chs)
-          (recur next-chs)
-          (async/close! out-ch))))
-    out-ch))
-
 (defn shard-graph [shards]
   (let [available-shard-ids (set (map :shard-id shards))]
     (reduce (fn [g {:keys [shard-id parent-shard-id ending-sequence-number]}]

@@ -77,51 +77,6 @@
     (client/describe-stream mock-client nil)))
 
 
-(deftest read-shards
-  (let [shards [[["af234" :a :b] ["asfe3" :c]]
-                [["vwe23"] ["32nfs"] ["v4245" :d]]
-                [["pa5fz" :e :f]]]
-        mock-record (fn [iter name]
-                      (let [id-val (-> (AttributeValue.) (.withS (str iter "-" name)))
-                            name-val (-> (AttributeValue.) (.withS name))]
-                        (-> (Record.)
-                            (.withDynamodb
-                             (-> (StreamRecord.)
-                                 (.withKeys (java.util.HashMap. {"id" id-val}))
-                                 (.withNewImage (java.util.HashMap. {"id" id-val
-                                                                     "name" name-val})))))))
-        mock-client (reify AmazonDynamoDBStreams
-                      (getRecords [client req]
-                        (let [iter (.getShardIterator req)]
-                          (proxy [GetRecordsResult] []
-                            (getRecords []
-                              (->> shards
-                                   (mapcat identity)
-                                   (some (fn [[xiter & xs]]
-                                           (when (= iter xiter)
-                                             (mapv (comp
-                                                    (partial mock-record xiter)
-                                                    name)
-                                                   xs)))))
-                              )
-                            (getNextShardIterator []
-                              (->> shards
-                                   (some (fn [sh]
-                                          (->> sh
-                                               (drop-while #(not= iter (first %)))
-                                               next
-                                               ffirst)))))))))
-        iterator-infos (map-indexed (fn [i x] {:iterator (ffirst x)
-                                               :shard-id (str "shard-id-" i)}) shards)
-        ch (client/read-shards mock-client iterator-infos {})
-        results (async/<!! (async/into [] ch))]
-    (is (= #{"shard-id-0" "shard-id-1" "shard-id-2"}
-           (set (map (comp :shard-id :iterator-info) results))))
-    (is (= #{"pa5fz-f" "pa5fz-e" "v4245-d" "asfe3-c" "af234-b" "af234-a"}
-           (set (map (comp :id :keys :dynamodb) results)))))
-  )
-
-
 (deftest match-shards
   (let [shards [{:shard-id "shardId-00000001473809200686-70269655" 
                  :parent-shard-id "shardId-00000001473796542190-2bd0df1e" 
