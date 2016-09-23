@@ -17,12 +17,14 @@
      (.setEndpoint endpoint))))
 
 (defn shard->clj [stream-arn ^Shard shard]
-  (let [^SequenceNumberRange snr (.getSequenceNumberRange shard)]
+  (let [^SequenceNumberRange snr (.getSequenceNumberRange shard)
+        ending (.getEndingSequenceNumber snr)]
     {:stream-arn stream-arn
      :shard-id (.getShardId shard)
      :parent-shard-id (.getParentShardId shard)
      :starting-sequence-number (BigInteger. (.getStartingSequenceNumber snr))
-     :ending-sequence-number (BigInteger. (.getEndingSequenceNumber snr))}))
+     :ending-sequence-number (when-not (clojure.string/blank? ending)
+                               (BigInteger. ending))}))
 
 (defn describe-stream [^AmazonDynamoDBStreams client arn]
   (let [^DescribeStreamRequest req (.withStreamArn (DescribeStreamRequest.) arn)
@@ -54,12 +56,12 @@
                                          (.withStreamArn arn)
                                          (.withShardId shard-id)
                                          (.withShardIteratorType type)
-                                         (.withSequenceNumber sequence-number))
+                                         (.withSequenceNumber (str sequence-number)))
         ^GetShardIteratorResult res (.getShardIterator client req)]
     {:iterator (.getShardIterator res)
      :type iterator-type
      :timestamp (System/currentTimeMillis)
-     :initial-sequence-number sequence-number
+     :initial-sequence-number (str sequence-number)
      :shard-id shard-id
      :stream-arn arn}))
 
@@ -141,12 +143,15 @@
     (apply sorted-set-by (dependency/topo-comparator graph) shard-ids')))
 
 
-(defn stop [{:keys [thread record-ch state-ch] :as stream-reader}]
-  (run! async/close! (filter identity [thread record-ch state-ch]))
-  (assoc stream-reader {:thread nil :record-ch nil :state-ch nil}))
+(defn stop-reader [{:keys [poison-ch] :as stream-reader}]
+  (async/>!! poison-ch :shutdown)
+  (assoc stream-reader
+         :thread nil
+         :record-ch nil
+         :state-ch nil))
 
-(defn start
-  [{:keys [client stream-arn record-ch state-ch record-batch-size parallelism keep-alive?
+(defn start-reader
+  [{:keys [client stream-arn record-ch state-ch poison-ch record-batch-size keep-alive?
            timeout-ms iterator-type sequence-number]
     :as stream-reader}]
   (let [thread
@@ -155,8 +160,10 @@
             (let [{:keys [shards] :as stream-info} (describe-stream client stream-arn)                 
                   graph (shard-graph shards)
                   pending-shard-ids (match-shards shards graph iterator-type sequence-number)
-                  state {:pending-shard-ids pending-shard-ids
-                         :sequence-number sequence-number}
+                  initial-state {:pending-shard-ids pending-shard-ids
+                                 :processed-shard-ids #{}
+                                 :sequence-number sequence-number
+                                 :describe-stream-requests-since-iteration 0}
                   iterate (fn [shard]
                             (if (= :update-marker shard)
                               {:update-marker true}
@@ -166,33 +173,35 @@
                   pending-ch (async/chan 100)          
                   ex-handler (fn [ex] {:error ex})
                   close? (not keep-alive?)
-                  cleanup (fn [] (run! async/close! [state-ch record-ch]))
-                  _ (async/put! state-ch {:status :start :state state})
+                  close-chs (fn [] (run! async/close! [state-ch record-ch]))
+                  _ (async/put! state-ch {:status :start :state initial-state})
                   _ (async/onto-chan pending-ch pending-shard-ids close?)
                   _ (when keep-alive? (async/>!! pending-ch :update-marker))
-                  _ (async/pipeline-blocking parallelism in-ch (map iterate) pending-ch close? ex-handler)]
-              (loop [state state]
+                  _ (async/pipeline-blocking 1 in-ch (map iterate) pending-ch close? ex-handler)]
+              (loop [state initial-state]
                 (let [timeout-ch (async/timeout timeout-ms)
-                      [{:keys [error iteration update-marker] :as val} port] (async/alts!! [in-ch timeout-ch])]
+                      [{:keys [error iteration update-marker] :as val} port]
+                      (async/alts!! [poison-ch in-ch timeout-ch] :priority true)]
                   (cond
                     (= port timeout-ch)
                     (do
                       (async/>!! state-ch {:status :read-in :error :timeout :state state})
-                      (if keep-alive?
-                        (recur state)
-                        (cleanup)))
+                      (recur state))
+
+                    (= port poison-ch)
+                    (do
+                      (async/>!! state-ch {:status :shutting-down :state state})
+                      (close-chs))
                     
                     error
                     (do
                       (async/>!! state-ch {:status :read-in :error error :state state})
-                      (if keep-alive?
-                        (recur state)
-                        (cleanup)))
+                      (recur state))
 
                     (nil? val)
                     (do
                       (async/>!! state-ch {:status :exhausted :state state})
-                      (cleanup))
+                      (close-chs))
                     
                     update-marker
                     (let [_ (async/>!! state-ch {:status :update-stream-description :state state})
@@ -200,22 +209,21 @@
                                              (describe-stream client stream-arn)
                                              (catch Exception ex
                                                {:error ex}))]
-                      (if-let [{:keys [error]} next-stream-info]
+                      (if-let [error (:error next-stream-info)]
                         (do
                           (async/>!! state-ch {:status :update-stream-description :error error :state state})
-                          (if keep-alive?
-                            (recur state)
-                            (cleanup)))
+                          (recur state))
                         (let [next-shards (:shards next-stream-info)
                               next-pending-shard-ids (match-shards next-shards
                                                                    (shard-graph next-shards)
                                                                    iterator-type
                                                                    (:sequence-number state))
                               new-shard-ids (clojure.set/difference next-pending-shard-ids
-                                                                    (:pending-shard-ids state))]
+                                                                    (:pending-shard-ids state)
+                                                                    (:processed-shard-ids state))]
                           (if (seq new-shard-ids)
                             (async/<!! (async/onto-chan pending-ch new-shard-ids false))
-                            ;; todo exponential backoff
+                            ;; todo: exponential backoff
                             (async/<!! (async/timeout timeout-ms)))
                           (async/>!! pending-ch :update-marker)
                           (recur (-> state
@@ -228,26 +236,53 @@
                       (recur (-> state
                                  (update :pending-shard-ids
                                          #(disj % (get-in (last iteration) [:iterator-info :shard-id])))
+                                 (update :processed-shard-ids
+                                         #(conj % (get-in (last iteration) [:iterator-info :shard-id])))
                                  (assoc :sequence-number
                                         (get-in (last iteration) [:dynamodb :sequence-number])
                                         :describe-stream-requests-since-iteration 0))))))))
             (catch Exception ex
-              (async/put! state-ch {:status :before-start :error ex})
+              (async/>!! state-ch {:status :before-start :error ex})
               nil)))]
     (assoc stream-reader :thread thread)))
 
-(defrecord StreamReader [client stream-arn thread record-ch state-ch iterator-type sequence-number
-                         parallelism record-batch-size timeout-ms keep-alive?])
+(defrecord StreamReader [client stream-arn thread record-ch state-ch poison-ch iterator-type sequence-number
+                         record-batch-size timeout-ms keep-alive?])
 
-(defn stream-reader [client stream-arn record-ch state-ch iterator-type
-                     {:keys [record-batch-size parallelism keep-alive? timeout-ms sequence-number]
-                      :or {record-batch-size 100
-                           parallelism 4
-                           keep-alive? false
-                           timeout-ms 5000}
-                      :as options}]
-  (map->StreamReader (assoc options
-                            :client client
-                            :stream-arn stream-arn
-                            :record-ch record-ch
-                            :state-ch state-ch)))
+
+(defn normalize-checkpoint [checkpoint]
+  (if-not (vector? checkpoint)
+    (vector checkpoint)
+    checkpoint))
+
+(defn continuous-reader [client stream-arn checkpoint record-ch state-ch & [opts]]
+  (let [[iterator-type & [sequence-number]] (normalize-checkpoint checkpoint)
+        {:keys [record-batch-size timeout-ms keep-alive?]
+         :or {record-batch-size 100 timeout-ms 5000 keep-alive? true}} opts]
+    (map->StreamReader {:client client
+                        :stream-arn stream-arn
+                        :iterator-type iterator-type
+                        :record-ch record-ch
+                        :state-ch state-ch
+                        :poison-ch (async/chan 1)
+                        :sequence-number sequence-number
+                        :record-batch-size record-batch-size
+                        :keep-alive? keep-alive?
+                        :timeout-ms timeout-ms})))
+
+(defn single-pass-reader [client stream-arn checkpoint record-ch & [ex-handler opts]]
+  (let [state-ch (async/chan (async/sliding-buffer 1))
+        reader (continuous-reader client stream-arn checkpoint record-ch
+                                  state-ch (assoc opts :keep-alive? false))
+        ex-handler (or ex-handler (fn [ex]
+                                       (-> (Thread/currentThread)
+                                           .getUncaughtExceptionHandler
+                                           (.uncaughtException (Thread/currentThread) ex))
+                                    nil))]
+    (async/go-loop []
+      (if-let [error (:error (async/<! state-ch))]
+        (do
+          (stop-reader reader)
+          (ex-handler error))
+        (recur)))
+    reader))

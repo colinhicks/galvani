@@ -1,11 +1,11 @@
 (ns galvani.client-test
   (:require [galvani.client :as client]
             [com.stuartsierra.dependency :as dependency]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [clojure.core.async :as async])
   (:import [com.amazonaws.services.dynamodbv2 AmazonDynamoDBStreams]
            [com.amazonaws.services.dynamodbv2.model Record StreamRecord AttributeValue
-            GetRecordsResult Shard SequenceNumberRange DescribeStreamResult StreamDescription]))
+            GetRecordsResult GetShardIteratorResult Shard SequenceNumberRange DescribeStreamResult StreamDescription]))
 
 
 (deftest read-shard
@@ -137,7 +137,7 @@
                  :starting-sequence-number 170481300000000008600933631N} 
                 {:shard-id "shardId-00000001473850173885-a8daa037" 
                  :parent-shard-id "shardId-00000001473836343761-d0e55bda" 
-                 :ending-sequence-number 170481300000000008600933938N 
+                 :ending-sequence-number 170481300000000008600993638N 
                  :starting-sequence-number 170481300000000008600993637N} 
                 {:shard-id "shardId-00000001473863878679-3c26c6b9" 
                  :parent-shard-id "shardId-00000001473850173885-a8daa037" 
@@ -192,12 +192,86 @@
                  :starting-sequence-number 170481300000000008600993637N} 
                 {:shard-id "shardId-00000001473863878679-3c26c6b9" 
                  :parent-shard-id "shardId-00000001473850173885-a8daa037" 
-                 :ending-sequence-number 171997500000000008527703142N 
-                 :starting-sequence-number 171997500000000008527703141N} 
+                 :ending-sequence-number 170481300000000008600993638N
+                 :starting-sequence-number 170481300000000008600993637N} 
                 {:shard-id "shardId-00000001473879823062-fb383dfe" 
                  :parent-shard-id "shardId-00000001473863878679-3c26c6b9" 
                  :ending-sequence-number 172875200000000012689616965N 
                  :starting-sequence-number 172875200000000012689616964N} 
                 {:shard-id "shardId-00000001473895717417-f02c79a0" 
                  :parent-shard-id "shardId-00000001473879823062-fb383dfe" 
-                 :starting-sequence-number 173750800000000011849530822N}]]))
+                 :starting-sequence-number 173750800000000011849530822N}]
+        shard-instance (fn [{:keys [shard-id parent-shard-id starting-sequence-number ending-sequence-number]}]
+                         (-> (Shard.)
+                             (.withShardId shard-id)
+                             (.withParentShardId parent-shard-id)
+                             (.withSequenceNumberRange
+                              (-> (SequenceNumberRange.)
+                                  (.withStartingSequenceNumber (str starting-sequence-number))
+                                  (.withEndingSequenceNumber (str ending-sequence-number))))))
+        client (reify AmazonDynamoDBStreams
+                 (describeStream [client req]
+                   (let [drop-n (if (= "full-stream-arn" (.getStreamArn req))
+                                  0
+                                  (- 2 (swap! describe-stream-invocations inc)))]
+                     (-> (DescribeStreamResult.)
+                         (.withStreamDescription
+                          (-> (StreamDescription.)
+                              (.withShards (->> shards
+                                                (drop-last drop-n)
+                                                (mapv shard-instance))))))))
+                 (getShardIterator [client req]
+                   (proxy [GetShardIteratorResult] []
+                     (getShardIterator []
+                       (str "iterator-" (.getShardId req)))))
+                 (getRecords [client req]
+                   (let [iter (.getShardIterator req)]
+                     (proxy [GetRecordsResult] []
+                       (getRecords []
+                         (let [{:keys [starting-sequence-number ending-sequence-number]}
+                               (some #(when (= iter (str "iterator-" (:shard-id %))) %) shards)
+                               ending-sequence-number (or ending-sequence-number
+                                                          (inc starting-sequence-number))]
+                           (->> (range starting-sequence-number ending-sequence-number)
+                                (map #(-> (Record.)
+                                          (.withDynamodb
+                                           (-> (StreamRecord.)
+                                               (.withSequenceNumber (str %))))))))
+                         )
+                       (getNextShardIterator []
+                         nil)))))]
+
+    (testing "single-pass-reader"
+      (let [test-timeout-ch (async/timeout 500)
+            record-ch (async/chan 100)
+            stream-reader
+            (client/start-reader
+             (client/single-pass-reader client
+                                        "full-stream-arn"
+                                        :trim-horizon
+                                        record-ch))
+            [result ch] (async/alts!! [test-timeout-ch (async/into [] record-ch)])]
+        (is (not= test-timeout-ch ch))
+        (is (= 6 (count result)))))
+
+    (testing "continuous-reader"
+      (let [record-ch (async/chan 100)
+            state-ch (async/chan 100)
+            stream-reader
+            (client/start-reader
+             (client/continuous-reader client
+                                       "stream-arn"
+                                       :latest
+                                       record-ch
+                                       state-ch))]
+        
+        (is (= :start (:status (async/<!! state-ch))))
+        (let [second-update (async/<!! state-ch)]
+          (is (= :update-stream-description (:status second-update)))
+          (is (empty? (:processed-shard-ids (:state second-update)))))
+        
+        (let [third-update (async/<!! state-ch)]
+          (is (= :update-stream-description (:status third-update)))
+          (is (not (empty? (:processed-shard-ids (:state third-update)))))
+          
+          (client/stop-reader stream-reader))))))
