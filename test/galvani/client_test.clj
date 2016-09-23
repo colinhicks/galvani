@@ -1,5 +1,6 @@
 (ns galvani.client-test
   (:require [galvani.client :as client]
+            [galvani.record-parsing :as record-parsing]
             [com.stuartsierra.dependency :as dependency]
             [clojure.test :refer [deftest is testing]]
             [clojure.core.async :as async])
@@ -25,15 +26,18 @@
                           (getRecords []
                             (mapv (partial mock-record (first @iters)) ["100" "101" "102"]))
                           (getNextShardIterator []
-                            (first (swap! iters rest))))))]
-    (let [recs (client/read-shard mock-client {:iterator (first @iters)})]
-      (is (instance? clojure.lang.LazySeq recs))
-      (is (= {:name "100" :id 1000100N} (->> recs (take 4) first :dynamodb :new-image)))
-      (is (= "2000" (first @iters)))
-      (last (take 4 recs))
-      (is (= "3000" (first @iters)))
-      (is (= {:name "102" :id 3000102N} (->> recs last :dynamodb :new-image)))
-      (is (= 9 (count (take 999 recs)))))))
+                            (first (swap! iters rest))))))
+        recs (client/read-shard mock-client
+                                {:iterator (first @iters)}
+                                (record-parsing/default-parser)
+                                100)]
+    (is (instance? clojure.lang.LazySeq recs))
+    (is (= {:name "100" :id 1000100N} (->> recs (take 4) first :dynamodb :new-image)))
+    (is (= "2000" (first @iters)))
+    (last (take 4 recs))
+    (is (= "3000" (first @iters)))
+    (is (= {:name "102" :id 3000102N} (->> recs last :dynamodb :new-image)))
+    (is (= 9 (count (take 999 recs))))))
 
 
 (deftest read-shard-empty-iterator
@@ -47,9 +51,12 @@
                                     (-> (Record.) (.withDynamodb (StreamRecord.)))))
                           (getNextShardIterator []
                             (when-let [iter (first (swap! iters rest))]
-                              (str iter))))))]
-    (let [recs (client/read-shard mock-client {:iterator (str (first @iters))})]
-      (is (= expected-count (count recs))))))
+                              (str iter))))))
+        recs (client/read-shard mock-client
+                                {:iterator (str (first @iters))}
+                                (record-parsing/default-parser)
+                                100)]
+    (is (= expected-count (count recs)))))
 
 
 (deftest describe-stream
@@ -197,17 +204,19 @@
                          nil)))))]
 
     (testing "single-pass-reader"
-      (let [test-timeout-ch (async/timeout 500)
+      (let [test-timeout-ch (async/timeout 1500)
             record-ch (async/chan 100)
             stream-reader
             (client/start-reader
              (client/single-pass-reader client
                                         "full-stream-arn"
                                         :trim-horizon
-                                        record-ch))
+                                        record-ch
+                                        (fn [ex] (println "error" ex))))
             [result ch] (async/alts!! [test-timeout-ch (async/into [] record-ch)])]
         (is (not= test-timeout-ch ch))
-        (is (= 6 (count result)))))
+        (is (= 6 (count result)))
+        (client/stop-reader stream-reader)))
 
     (testing "continuous-reader"
       (let [record-ch (async/chan 100)
@@ -229,4 +238,21 @@
           (is (= :update-stream-description (:status third-update)))
           (is (not (empty? (:processed-shard-ids (:state third-update)))))
           
-          (client/stop-reader stream-reader))))))
+          (client/stop-reader stream-reader))))
+
+    (testing "reader with no-op-parser"
+      (let [test-timeout-ch (async/timeout 1500)
+            record-ch (async/chan 100)
+            stream-reader
+            (client/start-reader
+             (client/single-pass-reader client
+                                        "latest-stream-arn"
+                                        :trim-horizon
+                                        record-ch
+                                        (fn [ex] (println ex))
+                                        {:record-parser (record-parsing/no-op-parser)}))
+            [result ch] (async/alts!! [test-timeout-ch record-ch])]
+        (is (not= test-timeout-ch ch))
+        (is (instance? com.amazonaws.services.dynamodbv2.model.Record result))
+        (client/stop-reader stream-reader)
+        result))))

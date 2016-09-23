@@ -74,24 +74,18 @@
     {:records batch
      :next-shard-iterator (.getNextShardIterator res)}))
 
-(defn read-shard* [client {:keys [iterator] :as iterator-info} aconv n xs]
+(defn read-shard* [client {:keys [iterator] :as iterator-info} parser n xs]
   (lazy-seq
    (if (seq xs)
-     (cons (record-parsing/record->clj (first xs) iterator-info aconv)
-           (read-shard* client iterator-info aconv n (rest xs)))
+     (cons (record-parsing/parse-record parser (first xs))
+           (read-shard* client iterator-info parser n (rest xs)))
      (if iterator
        (let [{:keys [records next-shard-iterator]} (records-batch client iterator n)
              next-iterator-info (assoc iterator-info :iterator next-shard-iterator)]
-         (read-shard* client next-iterator-info aconv n records))))))
+         (read-shard* client next-iterator-info parser n records))))))
 
-(defn read-shard
-  ([client iterator-info]
-   (read-shard client iterator-info {}))
-  ([client iterator-info {:keys [batch-size attribute-converter]
-                          :or {batch-size 100
-                               attribute-converter record-parsing/default-attribute-converter}}]
-   (read-shard* client iterator-info attribute-converter batch-size [])))
-
+(defn read-shard [client iterator-info record-parser record-batch-size]
+  (read-shard* client iterator-info record-parser record-batch-size []))
 
 (defn shard-graph [shards]
   (let [available-shard-ids (set (map :shard-id shards))]
@@ -134,8 +128,8 @@
          :state-ch nil))
 
 (defn start-reader
-  [{:keys [client stream-arn record-ch state-ch poison-ch record-batch-size keep-alive?
-           timeout-ms iterator-type sequence-number]
+  [{:keys [client stream-arn record-ch state-ch poison-ch record-parser record-batch-size
+           keep-alive? timeout-ms iterator-type sequence-number]
     :as stream-reader}]
   (let [thread
         (async/thread
@@ -151,7 +145,8 @@
                             (if (= :update-marker shard)
                               {:update-marker true}
                               (let [iter (shard-iterator client stream-arn shard iterator-type sequence-number)]
-                                {:iteration (read-shard client iter {:batch-size record-batch-size})})))
+                                {:iteration (read-shard client iter record-parser record-batch-size)
+                                 :shard-id shard})))
                   in-ch (async/chan 100)
                   pending-ch (async/chan 100)          
                   ex-handler (fn [ex] {:error ex})
@@ -214,23 +209,26 @@
                                      (update :describe-stream-requests-since-iteration inc))))))
 
                     iteration
-                    (do            
-                      (async/<!! (async/onto-chan record-ch iteration false))
-                      (recur (-> state
+                    (let [shard-id (:shard-id val)
+                          state (-> state
                                  (update :pending-shard-ids
-                                         #(disj % (get-in (last iteration) [:iterator-info :shard-id])))
+                                         #(disj % shard-id))
                                  (update :processed-shard-ids
-                                         #(conj % (get-in (last iteration) [:iterator-info :shard-id])))
-                                 (assoc :sequence-number
-                                        (get-in (last iteration) [:dynamodb :sequence-number])
-                                        :describe-stream-requests-since-iteration 0))))))))
+                                         #(conj % shard-id)))]
+                      (if (seq iteration)
+                        (do            
+                          (async/<!! (async/onto-chan record-ch iteration false))
+                          (recur (assoc state
+                                        :sequence-number (record-parsing/sequence-number (last iteration))
+                                        :describe-stream-requests-since-iteration 0)))
+                        (recur state)))))))
             (catch Exception ex
               (async/>!! state-ch {:status :before-start :error ex})
               nil)))]
     (assoc stream-reader :thread thread)))
 
 (defrecord StreamReader [client stream-arn thread record-ch state-ch poison-ch iterator-type sequence-number
-                         record-batch-size timeout-ms keep-alive?])
+                         record-parser record-batch-size timeout-ms keep-alive?])
 
 
 (defn normalize-checkpoint [checkpoint]
@@ -240,8 +238,12 @@
 
 (defn continuous-reader [client stream-arn checkpoint record-ch state-ch & [opts]]
   (let [[iterator-type & [sequence-number]] (normalize-checkpoint checkpoint)
-        {:keys [record-batch-size timeout-ms keep-alive?]
-         :or {record-batch-size 100 timeout-ms 5000 keep-alive? true}} opts]
+        {:keys [record-parser record-batch-size timeout-ms keep-alive?]
+         :or {record-parser (record-parsing/default-parser)
+              record-batch-size 100
+              timeout-ms 5000
+              keep-alive? true}}
+        opts]
     (map->StreamReader {:client client
                         :stream-arn stream-arn
                         :iterator-type iterator-type
@@ -249,11 +251,12 @@
                         :state-ch state-ch
                         :poison-ch (async/chan 1)
                         :sequence-number sequence-number
+                        :record-parser record-parser
                         :record-batch-size record-batch-size
                         :keep-alive? keep-alive?
                         :timeout-ms timeout-ms})))
 
-(defn single-pass-reader [client stream-arn checkpoint record-ch & [ex-handler opts]]
+(defn single-pass-reader [client stream-arn checkpoint record-ch ex-handler & [opts]]
   (let [state-ch (async/chan (async/sliding-buffer 1))
         reader (continuous-reader client stream-arn checkpoint record-ch
                                   state-ch (assoc opts :keep-alive? false))
@@ -265,6 +268,7 @@
     (async/go-loop []
       (if-let [error (:error (async/<! state-ch))]
         (do
+          (println "@@@@" error)
           (stop-reader reader)
           (ex-handler error))
         (recur)))
