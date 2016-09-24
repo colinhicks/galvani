@@ -1,6 +1,5 @@
 (ns colinhicks.galvani-test
   (:require [colinhicks.galvani :as galvani]
-            [colinhicks.galvani.record-parsing :as record-parsing]
             [com.stuartsierra.dependency :as dependency]
             [clojure.test :refer [deftest is testing]]
             [clojure.core.async :as async])
@@ -29,7 +28,7 @@
                             (first (swap! iters rest))))))
         recs (galvani/read-shard mock-client
                                 {:iterator (first @iters)}
-                                (record-parsing/default-parser)
+                                galvani/default-parser
                                 100)]
     (is (instance? clojure.lang.LazySeq recs))
     (is (= {:name "100" :id 1000100N} (->> recs (take 4) first :dynamodb :new-image)))
@@ -54,7 +53,7 @@
                               (str iter))))))
         recs (galvani/read-shard mock-client
                                 {:iterator (str (first @iters))}
-                                (record-parsing/default-parser)
+                                galvani/default-parser
                                 100)]
     (is (= expected-count (count recs)))))
 
@@ -248,7 +247,7 @@
                                         :trim-horizon
                                         record-ch
                                         (fn [ex] (throw ex))
-                                        {:record-parser (record-parsing/no-op-parser)}))
+                                        {:record-parser galvani/no-op-parser}))
             [result ch] (async/alts!! [test-timeout-ch record-ch])]
         (is (not= test-timeout-ch ch))
         (is (instance? com.amazonaws.services.dynamodbv2.model.Record result))

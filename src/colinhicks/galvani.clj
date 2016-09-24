@@ -230,16 +230,18 @@
 (defrecord StreamReader [client stream-arn thread record-ch state-ch poison-ch iterator-type sequence-number
                          record-parser record-batch-size timeout-ms keep-alive?])
 
-
 (defn normalize-checkpoint [checkpoint]
   (if-not (vector? checkpoint)
     (vector checkpoint)
     checkpoint))
 
+(def default-parser (record-parsing/default-parser))
+(def no-op-parser (record-parsing/no-op-parser))
+
 (defn continuous-reader [client stream-arn checkpoint record-ch state-ch & [opts]]
   (let [[iterator-type & [sequence-number]] (normalize-checkpoint checkpoint)
         {:keys [record-parser record-batch-size timeout-ms keep-alive?]
-         :or {record-parser (record-parsing/default-parser)
+         :or {record-parser default-parser
               record-batch-size 100
               timeout-ms 5000
               keep-alive? true}}
