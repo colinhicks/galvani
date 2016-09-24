@@ -1,28 +1,37 @@
 # Galvani
 
-## A Clojure client for reading DynamoDB streams
-
-
-### Usage
+## Usage
 
 ```clojure
-    (require '[galvani.client :as galvani])
+(require '[colinhicks.galvani :as galvani])
+(require '[clojure.core.async :as async])
 
-(defn all-available-records [stream-arn]
-  (let [client (galvani/streams-client)
-        oldest-shard-id (-> client
-                            (galvani/describe-stream stream-arn)
-                            (galvani/oldest-shard-id))
-        shard-iterator (galvani/shard-iterator client stream-arn oldest-shard-id :trim-horizon)]
-    (galvani/records client shard-iterator)))
+;; Example 1: Put available records from the current snapshot of the shards onto a core.async channel ...
+(defn dynamo-records-since [stream-arn checkpoint output-ch]
+  (let [client (galvani/streams-client)]
+    (galvani/start-reader
+     (galvani/single-pass-reader client
+                                 stream-arn
+                                 checkpoint
+                                 output-ch
+                                 (fn [exception] (throw exception)))))
+  output-ch)
 
-(->> (all-available-records "arn:aws:dynamodb...")
-     (filter #(-> % :dynamodb :new-item :something-interesting?))
-     (take 5))
+;; 1A: Grab the oldest available record from the stream
+(->> (async/chan 1)
+     (dynamo-records-since "arn:aws:dynamodb..." :trim-horizon)
+     (async/<!!))
+
+
+;; 1B: Get new record images in sets of 10 after a sequence number
+(->> (async/chan 100 (comp (keep (fn [record] (-> record :dynamodb :new-image)))
+                           (partition-all 10)))
+     (dynamo-records-since "arn:aws:dynamodb..." [:after-sequence-number 1234567890])
+     ...)
 ```
 
 
-### Background: Consistent expectations
+## Background: Consistent expectations
 
 DynamoDB Streams capture time-ordered sequences of item-level modifications to DynamoDB Tables. Streams can simplify backup or cross-region replication. Or they can serve as the backbone for a log-based architecture. And their time-order guarantee is notable: It means ddb streams can help enforce consensus and at-most-once semantics in (carefully designed) distributed systems.
 
@@ -30,7 +39,7 @@ Given the implementation of any above example, ddb streams can be thought of as 
 
 Pretty obvious, if you're reading this. But here's the take-away argument: **It's worth thinking of ddb streams on their own, not just as a feature of DynamoDB tables. That's why this code exists.**
 
-> ### Don't let marketing's naming conflation paint your bikeshed.
+### Don't let marketing's naming conflation paint your bikeshed.
 
 With a different pricing model, DynamoDB Streams be a product separate from DynamoDB Tables, perhaps in the Kinesis family. Indeed ddb streams are compatible with the Kinesis Client Library, with caveats. You could probably say ddb streams offer a subset of Kinesis Streams functionality, with the added (out-of-box) guarantee that ddb streams are time-ordered, given their input source is constrained to DynamoDB Tables, supplying monotonically increasing sequence ids and deduplication. Anyway ...
 
@@ -40,4 +49,4 @@ With a different pricing model, DynamoDB Streams be a product separate from Dyna
 Kinesis Streams, DynamoDB Streams, DynamoDB Tables. Amazon's conflating names invite confusion not only in dicussion; worse—they breed entanglement in our design & implementation. And if the names are here to stay, one way to mitigate ambiguity is by choosing narrower bounds for the scope of libraries interacting with these systems. Herein, an attempt.
 
 ### Acknowlegements
-* [taoensso/faraday](https://github.com/taoensso/faraday)
+* Dynamo record type inference adapted from [taoensso/faraday](https://github.com/taoensso/faraday)

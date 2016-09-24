@@ -133,6 +133,7 @@
     (is (= (->> shards (sort-by :starting-sequence-number) (map :shard-id))
            (vec (galvani/match-shards shards graph :trim-horizon))))))
 
+;; todo: dedupe, no atom/state
 (deftest stream-reader
   (let [describe-stream-invocations (atom 0)
         shards [{:shard-id "shardId-00000001473809200686-70269655" 
@@ -252,3 +253,5 @@
         (is (not= test-timeout-ch ch))
         (is (instance? com.amazonaws.services.dynamodbv2.model.Record result))
         (galvani/stop-reader stream-reader)))))
+
+
