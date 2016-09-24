@@ -1,4 +1,4 @@
-(ns galvani.record-parsing
+(ns colinhicks.galvani.record-parsing
   (:require [clojure.string :as s])
   (:import [com.amazonaws.services.dynamodbv2.model AttributeValue]))
 

@@ -1,6 +1,6 @@
-(ns galvani.client-test
-  (:require [galvani.client :as client]
-            [galvani.record-parsing :as record-parsing]
+(ns colinhicks.galvani-test
+  (:require [colinhicks.galvani :as galvani]
+            [colinhicks.galvani.record-parsing :as record-parsing]
             [com.stuartsierra.dependency :as dependency]
             [clojure.test :refer [deftest is testing]]
             [clojure.core.async :as async])
@@ -27,7 +27,7 @@
                             (mapv (partial mock-record (first @iters)) ["100" "101" "102"]))
                           (getNextShardIterator []
                             (first (swap! iters rest))))))
-        recs (client/read-shard mock-client
+        recs (galvani/read-shard mock-client
                                 {:iterator (first @iters)}
                                 (record-parsing/default-parser)
                                 100)]
@@ -52,7 +52,7 @@
                           (getNextShardIterator []
                             (when-let [iter (first (swap! iters rest))]
                               (str iter))))))
-        recs (client/read-shard mock-client
+        recs (galvani/read-shard mock-client
                                 {:iterator (str (first @iters))}
                                 (record-parsing/default-parser)
                                 100)]
@@ -77,11 +77,11 @@
                             (.withStreamDescription
                              (-> (StreamDescription.)
                                  (.withShards shards))))))
-        stream-description (client/describe-stream mock-client nil)]
+        stream-description (galvani/describe-stream mock-client nil)]
     (is (= (mapv first shard-params) (mapv :shard-id (:shards stream-description))))
     (is (= (take 2 (mapv :shard-id (:shards stream-description)))
            (drop 1 (mapv :parent-shard-id (:shards stream-description)))))
-    (client/describe-stream mock-client nil)))
+    (galvani/describe-stream mock-client nil)))
 
 
 (deftest match-shards
@@ -112,7 +112,7 @@
                 {:shard-id "shardId-00000001473895717417-f02c79a0" 
                  :parent-shard-id "shardId-00000001473879823062-fb383dfe" 
                  :starting-sequence-number 173750800000000011849530822N}]
-        graph (client/shard-graph shards)]
+        graph (galvani/shard-graph shards)]
     (is (= #{"shardId-00000001473809200686-70269655" :trim-horizon}
            (dependency/transitive-dependencies graph (:shard-id (second shards)))))
     (is (= #{"shardId-00000001473895717417-f02c79a0"}
@@ -123,16 +123,16 @@
             "shardId-00000001473863878679-3c26c6b9"
             "shardId-00000001473879823062-fb383dfe"
             "shardId-00000001473895717417-f02c79a0"]
-           (vec (client/match-shards shards graph :at-sequence-number 170481300000000008600933632N))))
+           (vec (galvani/match-shards shards graph :at-sequence-number 170481300000000008600933632N))))
     
     (is (empty?
-         (client/match-shards shards graph :at-sequence-number 0)))
+         (galvani/match-shards shards graph :at-sequence-number 0)))
 
     (is (= #{"shardId-00000001473895717417-f02c79a0"}
-           (client/match-shards shards graph :latest)))
+           (galvani/match-shards shards graph :latest)))
 
     (is (= (->> shards (sort-by :starting-sequence-number) (map :shard-id))
-           (vec (client/match-shards shards graph :trim-horizon))))))
+           (vec (galvani/match-shards shards graph :trim-horizon))))))
 
 (deftest stream-reader
   (let [describe-stream-invocations (atom 0)
@@ -206,8 +206,8 @@
     (testing "single-pass-reader"
       (let [record-ch (async/chan 100)
             stream-reader
-            (client/start-reader
-             (client/single-pass-reader client
+            (galvani/start-reader
+             (galvani/single-pass-reader client
                                         "full-stream-arn"
                                         :trim-horizon
                                         record-ch
@@ -220,8 +220,8 @@
       (let [record-ch (async/chan 100)
             state-ch (async/chan 100)
             stream-reader
-            (client/start-reader
-             (client/continuous-reader client
+            (galvani/start-reader
+             (galvani/continuous-reader client
                                        "stream-arn"
                                        :latest
                                        record-ch
@@ -236,14 +236,14 @@
           (is (= :update-stream-description (:status third-update)))
           (is (not (empty? (:processed-shard-ids (:state third-update)))))
           
-          (client/stop-reader stream-reader))))
+          (galvani/stop-reader stream-reader))))
 
     (testing "reader with no-op-parser"
       (let [test-timeout-ch (async/timeout 500)
             record-ch (async/chan 100)
             stream-reader
-            (client/start-reader
-             (client/single-pass-reader client
+            (galvani/start-reader
+             (galvani/single-pass-reader client
                                         "latest-stream-arn"
                                         :trim-horizon
                                         record-ch
@@ -252,4 +252,4 @@
             [result ch] (async/alts!! [test-timeout-ch record-ch])]
         (is (not= test-timeout-ch ch))
         (is (instance? com.amazonaws.services.dynamodbv2.model.Record result))
-        (client/stop-reader stream-reader)))))
+        (galvani/stop-reader stream-reader)))))

@@ -1,7 +1,7 @@
-(ns galvani.client
+(ns colinhicks.galvani
   (:require [clojure.core.async :as async]
             [com.stuartsierra.dependency :as dependency]
-            [galvani.record-parsing :as record-parsing])
+            [colinhicks.galvani.record-parsing :as record-parsing])
   (:import [com.amazonaws.auth EnvironmentVariableCredentialsProvider]
            [com.amazonaws.services.dynamodbv2 AmazonDynamoDBStreamsClient AmazonDynamoDBStreams]
            [com.amazonaws.services.dynamodbv2.model DescribeStreamRequest DescribeStreamResult
