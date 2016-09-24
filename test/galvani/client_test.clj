@@ -204,19 +204,17 @@
                          nil)))))]
 
     (testing "single-pass-reader"
-      (let [test-timeout-ch (async/timeout 1500)
-            record-ch (async/chan 100)
+      (let [record-ch (async/chan 100)
             stream-reader
             (client/start-reader
              (client/single-pass-reader client
                                         "full-stream-arn"
                                         :trim-horizon
                                         record-ch
-                                        (fn [ex] (println "error" ex))))
-            [result ch] (async/alts!! [test-timeout-ch (async/into [] record-ch)])]
-        (is (not= test-timeout-ch ch))
-        (is (= 6 (count result)))
-        (client/stop-reader stream-reader)))
+                                        (fn [ex] (throw ex))))
+            result (async/<!! (async/into [] record-ch))]
+        
+        (is (= 6 (count result)))))
 
     (testing "continuous-reader"
       (let [record-ch (async/chan 100)
@@ -241,7 +239,7 @@
           (client/stop-reader stream-reader))))
 
     (testing "reader with no-op-parser"
-      (let [test-timeout-ch (async/timeout 1500)
+      (let [test-timeout-ch (async/timeout 500)
             record-ch (async/chan 100)
             stream-reader
             (client/start-reader
@@ -249,10 +247,9 @@
                                         "latest-stream-arn"
                                         :trim-horizon
                                         record-ch
-                                        (fn [ex] (println ex))
+                                        (fn [ex] (throw ex))
                                         {:record-parser (record-parsing/no-op-parser)}))
             [result ch] (async/alts!! [test-timeout-ch record-ch])]
         (is (not= test-timeout-ch ch))
         (is (instance? com.amazonaws.services.dynamodbv2.model.Record result))
-        (client/stop-reader stream-reader)
-        result))))
+        (client/stop-reader stream-reader)))))

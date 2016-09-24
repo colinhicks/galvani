@@ -121,7 +121,7 @@
 
 
 (defn stop-reader [{:keys [poison-ch] :as stream-reader}]
-  (async/>!! poison-ch :shutdown)
+  (async/put! poison-ch :shutdown)
   (assoc stream-reader
          :thread nil
          :record-ch nil
@@ -151,7 +151,7 @@
                   pending-ch (async/chan 100)          
                   ex-handler (fn [ex] {:error ex})
                   close? (not keep-alive?)
-                  close-chs (fn [] (run! async/close! [state-ch record-ch]))
+                  close-chs (fn [] (run! async/close! [state-ch record-ch in-ch]))
                   _ (async/put! state-ch {:status :start :state initial-state})
                   _ (async/onto-chan pending-ch pending-shard-ids close?)
                   _ (when keep-alive? (async/>!! pending-ch :update-marker))
@@ -259,17 +259,18 @@
 (defn single-pass-reader [client stream-arn checkpoint record-ch ex-handler & [opts]]
   (let [state-ch (async/chan (async/sliding-buffer 1))
         reader (continuous-reader client stream-arn checkpoint record-ch
-                                  state-ch (assoc opts :keep-alive? false))
-        ex-handler (or ex-handler (fn [ex]
-                                       (-> (Thread/currentThread)
-                                           .getUncaughtExceptionHandler
-                                           (.uncaughtException (Thread/currentThread) ex))
-                                    nil))]
+                                  state-ch (assoc opts :keep-alive? false))]
     (async/go-loop []
-      (if-let [error (:error (async/<! state-ch))]
-        (do
-          (println "@@@@" error)
+      (let [update (async/<! state-ch)]
+        (cond
+          (nil? update)
           (stop-reader reader)
-          (ex-handler error))
-        (recur)))
+
+          (:error update)
+          (do
+            (stop-reader reader)
+            (ex-handler (:error update)))
+
+          :default
+          (recur))))
     reader))
