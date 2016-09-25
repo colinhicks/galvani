@@ -6,7 +6,7 @@
 (require '[colinhicks.galvani :as galvani])
 (require '[clojure.core.async :as async])
 
-;; Example 1: Put available records from the current snapshot of the shards onto a core.async channel ...
+;; 1: Put available records from the current snapshot of the shards onto a core.async channel ...
 (defn dynamo-records-since [stream-arn checkpoint output-ch]
   (let [client (galvani/streams-client)]
     (galvani/start-reader
@@ -28,6 +28,25 @@
                            (partition-all 10)))
      (dynamo-records-since "arn:aws:dynamodb..." [:after-sequence-number 1234567890])
      ...)
+     
+
+;; By default, stream entities are parsed into clj records (see Record and StreamRecord in galvani.stream-parsing).
+;; Where these records embed DynamoDB objects, a best-guess attempt is made at type inference, based on Faraday's approach.
+;; In contrast to Faraday, byte fields are not assumed to be Nippy-serialized; it's up to your application to handle this case.
+;; Override the reader's parser by passing an implementation of gavani.record-parsing's Parser protocol to the options object.
+;; In turn, the parser must mint implementations of the RecordTracking protocol.
+;; If you want to consume directly the AWS client's raw dynamodbv2.model.Record use the provided no-op-parser.
+
+;; 2: Use the continuous reader to read the stream over an indefinite period
+
+;; You may choose to use a lifecyle-management framework like stuartsierra.component
+(extend-protocol component/Lifecycle
+  galvani/StreamReader
+  (start [component]
+    (galvani/start-reader component))
+  (stop [component]
+    (galvani/stop-reader component)))
+
 ```
 
 
