@@ -1,4 +1,4 @@
-(defproject net.colinhicks/galvani "0.0.1-SNAPSHOT"
+(defproject net.colinhicks/galvani "0.0.1"
   :description "A Clojure client for reading DynamoDB Streams"
   :url "https://github.com/colinhicks/galvani"
   :license {:name "Eclipse Public License"

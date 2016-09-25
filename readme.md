@@ -1,5 +1,7 @@
 # Galvani
 
+[![Clojars Project](https://img.shields.io/clojars/v/net.colinhicks/galvani.svg)](https://clojars.org/net.colinhicks/galvani)
+
 ## Usage
 
 ```clojure
